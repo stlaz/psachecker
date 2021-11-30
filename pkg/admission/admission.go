@@ -20,7 +20,7 @@ func SetupAdmission(kubeClient kubernetes.Interface) (*psadmission.Admission, er
 	//        -> the following is therefore only the default?
 	// TODO: We probably want to be aware of the exemptions so we need the full config instead of just the evaluator, right?
 	//		 Or maybe not, just evaluate the pod?
-	return &psadmission.Admission{
+	adm := &psadmission.Admission{
 		Evaluator:        evaluator,
 		PodSpecExtractor: &psadmission.DefaultPodSpecExtractor{},
 		Configuration: &psadmissionapi.PodSecurityConfiguration{
@@ -35,5 +35,10 @@ func SetupAdmission(kubeClient kubernetes.Interface) (*psadmission.Admission, er
 		},
 		NamespaceGetter: nsGetter,
 		PodLister:       podLister,
-	}, nil
+	}
+	if err := adm.CompleteConfiguration(); err != nil {
+		return nil, err
+	}
+
+	return adm, adm.ValidateConfiguration()
 }
