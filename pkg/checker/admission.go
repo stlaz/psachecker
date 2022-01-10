@@ -8,14 +8,13 @@ import (
 	"k8s.io/pod-security-admission/policy"
 )
 
-func SetupAdmission(kubeClient kubernetes.Interface) (*psadmission.Admission, error) {
+func SetupAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.NamespaceGetter) (*psadmission.Admission, error) {
 	evaluator, err := policy.NewEvaluator(policy.DefaultChecks()) // TODO: allow experimental checks by a flag
 	if err != nil {
 		return nil, err
 	}
 
-	nsGetter := psadmission.NamespaceGetterFromClient(kubeClient) // to get the NS rules and possibly check for NS exemption
-	podLister := psadmission.PodListerFromClient(kubeClient)      // only used while validating pods in an NS
+	podLister := psadmission.PodListerFromClient(kubeClient) // only used while validating pods in an NS
 	// FIXME: don't be static, either read from cluster, allow configuring from flags?
 	//        -> the following is therefore only the default?
 	// TODO: We probably want to be aware of the exemptions so we need the full config instead of just the evaluator, right?

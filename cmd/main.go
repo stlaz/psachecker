@@ -31,7 +31,10 @@ func newCmd() *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(c *cobra.Command, args []string) error {
 			o.Complete(args)
-			// o.Validate
+			errs := o.Validate()
+			if len(errs) > 0 {
+				return fmt.Errorf("there were errors while setting up the command: %v", errs)
+			}
 
 			resp, err := o.Run(context.Background())
 			if err != nil {
