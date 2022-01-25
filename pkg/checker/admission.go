@@ -2,6 +2,7 @@ package checker
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	admissionv1 "k8s.io/api/admission/v1"
@@ -16,6 +17,26 @@ type ParallelAdmission struct {
 	privileged *psadmission.Admission
 	baseline   *psadmission.Admission
 	restricted *psadmission.Admission
+}
+
+type ParallelAdmissionResult struct {
+	Privileged, Baseline, Restricted *admissionv1.AdmissionResponse
+}
+
+func (r *ParallelAdmissionResult) String() string {
+	resultString := func(resp *admissionv1.AdmissionResponse) string {
+		if resp.Allowed {
+			return "allowed"
+		}
+		return fmt.Sprintf("%s: %s", resp.Result.Status, resp.Result.Message)
+	}
+
+	return fmt.Sprintf(
+		"privileged: %s\nbaseline: %s\nrestricted: %s\n",
+		resultString(r.Privileged),
+		resultString(r.Baseline),
+		resultString(r.Restricted),
+	)
 }
 
 func NewParallelAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.NamespaceGetter) (*ParallelAdmission, error) {
@@ -46,7 +67,8 @@ func NewParallelAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.
 	}, nil
 }
 
-func (a *ParallelAdmission) Validate(ctx context.Context, attrs psadmission.Attributes) (privileged, baseline, restricted *admissionv1.AdmissionResponse) {
+func (a *ParallelAdmission) Validate(ctx context.Context, attrs psadmission.Attributes) *ParallelAdmissionResult {
+	result := &ParallelAdmissionResult{}
 	resultsWG := &sync.WaitGroup{}
 	waitForAdmission := func(wg *sync.WaitGroup, admission *psadmission.Admission, result **admissionv1.AdmissionResponse) {
 		defer wg.Done()
@@ -54,13 +76,13 @@ func (a *ParallelAdmission) Validate(ctx context.Context, attrs psadmission.Attr
 	}
 
 	resultsWG.Add(3)
-	go waitForAdmission(resultsWG, a.privileged, &privileged)
-	go waitForAdmission(resultsWG, a.baseline, &baseline)
-	go waitForAdmission(resultsWG, a.restricted, &restricted)
+	go waitForAdmission(resultsWG, a.privileged, &result.Privileged)
+	go waitForAdmission(resultsWG, a.baseline, &result.Baseline)
+	go waitForAdmission(resultsWG, a.restricted, &result.Restricted)
 
 	resultsWG.Wait()
 
-	return
+	return result
 }
 
 func setupAdmission(

@@ -36,12 +36,14 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("there were errors while setting up the command: %v", errs)
 			}
 
-			privResp, baseResp, restrResp, err := o.Run(context.Background())
+			responses, err := o.Run(context.Background())
 			if err != nil {
 				return err
 			}
 
-			fmt.Fprintf(c.OutOrStdout(), "privileged: %v\n\nbaseline: %v\n\nrestricted: %v", privResp, baseResp, restrResp)
+			for resource, response := range responses {
+				fmt.Fprintf(c.OutOrStdout(), "%s:\n%s\n---\n\n", resource, response.String())
+			}
 			return nil
 		},
 	}

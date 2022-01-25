@@ -119,50 +119,55 @@ func (opts *PSACheckerOptions) Validate() []error {
 	return errors
 }
 
-func (opts *PSACheckerOptions) Run(ctx context.Context) (privileged, baseline, restricted *admissionv1.AdmissionResponse, err error) {
+func (opts *PSACheckerOptions) Run(ctx context.Context) (map[string]*ParallelAdmissionResult, error) {
 	res := opts.builder.Do()
 
 	infos, err := res.Infos()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
-	}
-
-	if numInfos := len(infos); numInfos != 1 { // FIXME: only for simplicity now, allow passing multiple objects in a single NS later
-		return nil, nil, nil, fmt.Errorf("got unexpected number of objects: %d", numInfos)
+		return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
 	}
 
 	adm, err := NewParallelAdmission(opts.kubeClient, opts.nsGetter)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to set up admission: %w", err)
+		return nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
 
-	var resource schema.GroupVersionResource
-	if infos[0].Mapping != nil {
-		resource = infos[0].Mapping.Resource
-	} else {
-		// TODO: not great, I wonder whether there's a better way to do this for non-server requests
-		resource, _ = meta.UnsafeGuessKindToResource(infos[0].Object.GetObjectKind().GroupVersionKind())
-	}
+	results := map[string]*ParallelAdmissionResult{}
+	for _, resInfo := range infos {
 
-	if opts.isLocal && len(infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetNamespace()) == 0 {
-		// the resource.Builder DefaultNamespace() won't default namespaces unless Latest() is set but
-		// Latest() would attempt to retrieve the data from server (and would panic() on missing RestMapping)
-		// so let's just do this
-		ns := *opts.clientConfigOptions.Namespace
-		if len(ns) == 0 {
-			ns = "fairly-random-ns"
+		var resource schema.GroupVersionResource
+		if resInfo.Mapping != nil {
+			resource = resInfo.Mapping.Resource
+		} else {
+			// TODO: not great, I wonder whether there's a better way to do this for non-server requests
+			resource, _ = meta.UnsafeGuessKindToResource(resInfo.Object.GetObjectKind().GroupVersionKind())
 		}
-		infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().SetNamespace(ns)
+
+		if opts.isLocal && len(resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetNamespace()) == 0 {
+			// the resource.Builder DefaultNamespace() won't default namespaces unless Latest() is set but
+			// Latest() would attempt to retrieve the data from server (and would panic() on missing RestMapping)
+			// so let's just do this
+			ns := *opts.clientConfigOptions.Namespace
+			if len(ns) == 0 {
+				ns = "fairly-random-ns"
+			}
+			resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta().SetNamespace(ns)
+		}
+
+		metaObj := resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta()
+		objNS, objName := metaObj.GetNamespace(), metaObj.GetName()
+		objKind := resInfo.Object.GetObjectKind()
+		key := fmt.Sprintf("gvk: %q - %s/%s", objKind.GroupVersionKind().String(), objNS, objName)
+
+		results[key] = adm.Validate(ctx, &psadmission.AttributesRecord{
+			Namespace: objNS,
+			Name:      objName,
+			Resource:  resource,
+			Operation: admissionv1.Create,
+			Object:    resInfo.Object,
+			Username:  "", // TODO: do we need this? What's it for anyway?
+		})
 	}
 
-	privileged, baseline, restricted = adm.Validate(ctx, &psadmission.AttributesRecord{
-		Namespace: infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetNamespace(), // TODO: get the meta obj earlier, reuse
-		Name:      infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetName(),
-		Resource:  resource,
-		Operation: admissionv1.Create,
-		Object:    infos[0].Object,
-		Username:  "", // TODO: do we need this? What's it for anyway?
-	})
-
-	return privileged, baseline, restricted, nil
+	return results, nil
 }
