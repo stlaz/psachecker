@@ -119,21 +119,21 @@ func (opts *PSACheckerOptions) Validate() []error {
 	return errors
 }
 
-func (opts *PSACheckerOptions) Run(ctx context.Context) (*admissionv1.AdmissionResponse, error) {
+func (opts *PSACheckerOptions) Run(ctx context.Context) (privileged, baseline, restricted *admissionv1.AdmissionResponse, err error) {
 	res := opts.builder.Do()
 
 	infos, err := res.Infos()
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
 	}
 
 	if numInfos := len(infos); numInfos != 1 { // FIXME: only for simplicity now, allow passing multiple objects in a single NS later
-		return nil, fmt.Errorf("got unexpected number of objects: %d", numInfos)
+		return nil, nil, nil, fmt.Errorf("got unexpected number of objects: %d", numInfos)
 	}
 
-	adm, err := SetupAdmission(opts.kubeClient, opts.nsGetter)
+	adm, err := NewParallelAdmission(opts.kubeClient, opts.nsGetter)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set up admission: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
 
 	var resource schema.GroupVersionResource
@@ -155,7 +155,7 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (*admissionv1.AdmissionR
 		infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().SetNamespace(ns)
 	}
 
-	admResp := adm.Validate(ctx, &psadmission.AttributesRecord{
+	privileged, baseline, restricted = adm.Validate(ctx, &psadmission.AttributesRecord{
 		Namespace: infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetNamespace(), // TODO: get the meta obj earlier, reuse
 		Name:      infos[0].Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetName(),
 		Resource:  resource,
@@ -164,5 +164,5 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (*admissionv1.AdmissionR
 		Username:  "", // TODO: do we need this? What's it for anyway?
 	})
 
-	return admResp, nil
+	return privileged, baseline, restricted, nil
 }

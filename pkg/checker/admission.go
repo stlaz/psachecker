@@ -1,6 +1,10 @@
 package checker
 
 import (
+	"context"
+	"sync"
+
+	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/client-go/kubernetes"
 	psadmission "k8s.io/pod-security-admission/admission"
 	psadmissionapi "k8s.io/pod-security-admission/admission/api"
@@ -8,27 +12,74 @@ import (
 	"k8s.io/pod-security-admission/policy"
 )
 
-func SetupAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.NamespaceGetter) (*psadmission.Admission, error) {
+type ParallelAdmission struct {
+	privileged *psadmission.Admission
+	baseline   *psadmission.Admission
+	restricted *psadmission.Admission
+}
+
+func NewParallelAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.NamespaceGetter) (*ParallelAdmission, error) {
 	evaluator, err := policy.NewEvaluator(policy.DefaultChecks()) // TODO: allow experimental checks by a flag
 	if err != nil {
 		return nil, err
 	}
 
 	podLister := psadmission.PodListerFromClient(kubeClient) // only used while validating pods in an NS
-	// FIXME: don't be static, either read from cluster, allow configuring from flags?
-	//        -> the following is therefore only the default?
-	// TODO: We probably want to be aware of the exemptions so we need the full config instead of just the evaluator, right?
-	//		 Or maybe not, just evaluate the pod?
+
+	privilegedAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelPrivileged)
+	if err != nil {
+		return nil, err
+	}
+	baselineAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelBaseline)
+	if err != nil {
+		return nil, err
+	}
+	restrictedAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelRestricted)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ParallelAdmission{
+		privileged: privilegedAdm,
+		baseline:   baselineAdm,
+		restricted: restrictedAdm,
+	}, nil
+}
+
+func (a *ParallelAdmission) Validate(ctx context.Context, attrs psadmission.Attributes) (privileged, baseline, restricted *admissionv1.AdmissionResponse) {
+	resultsWG := &sync.WaitGroup{}
+	waitForAdmission := func(wg *sync.WaitGroup, admission *psadmission.Admission, result **admissionv1.AdmissionResponse) {
+		defer wg.Done()
+		*result = admission.Validate(ctx, attrs)
+	}
+
+	resultsWG.Add(3)
+	go waitForAdmission(resultsWG, a.privileged, &privileged)
+	go waitForAdmission(resultsWG, a.baseline, &baseline)
+	go waitForAdmission(resultsWG, a.restricted, &restricted)
+
+	resultsWG.Wait()
+
+	return
+}
+
+func setupAdmission(
+	nsGetter psadmission.NamespaceGetter,
+	podLister psadmission.PodLister,
+	evaluator policy.Evaluator,
+	admissionLevel psapi.Level,
+) (*psadmission.Admission, error) {
+
 	adm := &psadmission.Admission{
 		Evaluator:        evaluator,
 		PodSpecExtractor: &psadmission.DefaultPodSpecExtractor{},
 		Configuration: &psadmissionapi.PodSecurityConfiguration{
 			Defaults: psadmissionapi.PodSecurityDefaults{
-				Enforce:        string(psapi.LevelPrivileged),
+				Enforce:        string(admissionLevel),
 				EnforceVersion: psapi.VersionLatest,
-				Audit:          string(psapi.LevelBaseline), // TODO: so use all the different levels at once to force pod evaluation?
+				Audit:          string(admissionLevel),
 				AuditVersion:   psapi.VersionLatest,
-				Warn:           string(psapi.LevelRestricted),
+				Warn:           string(admissionLevel),
 				WarnVersion:    psapi.VersionLatest,
 			},
 		},
