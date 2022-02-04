@@ -37,6 +37,8 @@ type PSACheckerOptions struct {
 	clientConfigOptions *genericclioptions.ConfigFlags
 	filenameOptions     *resource.FilenameOptions
 
+	defaultNamespaces bool
+
 	builder *resource.Builder
 	// nsGetter for the admission to get the NS rules and possibly check for NS exemption
 	nsGetter   psadmission.NamespaceGetter
@@ -53,11 +55,14 @@ func NewPSACheckerOptions() *PSACheckerOptions {
 }
 
 func (opts *PSACheckerOptions) AddFlags(cmd *cobra.Command) {
-	opts.clientConfigOptions.AddFlags(cmd.Flags())
+	flags := cmd.Flags()
+
+	opts.clientConfigOptions.AddFlags(flags)
 	cmdutil.AddFilenameOptionFlags(cmd, // TODO: this adds a kustomize flag, do we need to special-case handle it?
 		opts.filenameOptions,
 		"identifying the resource to run PodSecurity admission check against",
 	)
+	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "default empty namespaces in files to the --namespace value")
 }
 
 func (opts *PSACheckerOptions) ClientConfig() (*rest.Config, error) {
@@ -107,16 +112,20 @@ func (opts *PSACheckerOptions) Complete(args []string) error {
 }
 
 func (opts *PSACheckerOptions) Validate() []error {
-	errors := []error{}
+	errs := []error{}
 
 	if opts.kubeClient == nil {
-		errors = append(errors, fmt.Errorf("missing kube client"))
+		errs = append(errs, fmt.Errorf("missing kube client"))
 	}
 	if opts.nsGetter == nil {
-		errors = append(errors, fmt.Errorf("missing nsGetter"))
+		errs = append(errs, fmt.Errorf("missing nsGetter"))
 	}
 
-	return errors
+	if opts.defaultNamespaces && len(*opts.clientConfigOptions.Namespace) == 0 {
+		errs = append(errs, fmt.Errorf("cannot specify --default-namespaces without also specifying a value for --namespace"))
+	}
+
+	return errs
 }
 
 func (opts *PSACheckerOptions) Run(ctx context.Context) (map[string]*ParallelAdmissionResult, error) {
@@ -143,19 +152,19 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (map[string]*ParallelAdm
 			resource, _ = meta.UnsafeGuessKindToResource(resInfo.Object.GetObjectKind().GroupVersionKind())
 		}
 
-		if opts.isLocal && len(resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta().GetNamespace()) == 0 {
+		objMeta := resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta()
+		if opts.isLocal && len(objMeta.GetNamespace()) == 0 {
+			if !opts.defaultNamespaces {
+				return nil, fmt.Errorf("\"%s/%s\" is missing namespace in its definition", resInfo.Object.GetObjectKind().GroupVersionKind().Kind, objMeta.GetName())
+			}
+
 			// the resource.Builder DefaultNamespace() won't default namespaces unless Latest() is set but
 			// Latest() would attempt to retrieve the data from server (and would panic() on missing RestMapping)
 			// so let's just do this
-			ns := *opts.clientConfigOptions.Namespace
-			if len(ns) == 0 {
-				ns = "fairly-random-ns"
-			}
-			resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta().SetNamespace(ns)
+			objMeta.SetNamespace(*opts.clientConfigOptions.Namespace)
 		}
 
-		metaObj := resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta()
-		objNS, objName := metaObj.GetNamespace(), metaObj.GetName()
+		objNS, objName := objMeta.GetNamespace(), objMeta.GetName()
 		objKind := resInfo.Object.GetObjectKind()
 		key := fmt.Sprintf("gvk: %q - %s/%s", objKind.GroupVersionKind().String(), objNS, objName)
 

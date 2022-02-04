@@ -49,7 +49,6 @@ func newCmd() *cobra.Command {
 	}
 
 	o.AddFlags(cmd)
-	// TODO: add filename options - see https://github.com/kubernetes/kubernetes/blob/9a75e7b0fd1b567f774a3373be640e19b33e7ef1/staging/src/k8s.io/kubectl/pkg/cmd/util/helpers.go#L405
 
 	return cmd
 }
