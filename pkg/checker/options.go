@@ -3,17 +3,15 @@ package checker
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
 
-	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
@@ -21,6 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	psadmission "k8s.io/pod-security-admission/admission"
+	psapi "k8s.io/pod-security-admission/api"
 )
 
 var (
@@ -37,7 +36,9 @@ type PSACheckerOptions struct {
 	clientConfigOptions *genericclioptions.ConfigFlags
 	filenameOptions     *resource.FilenameOptions
 
+	// custom flags
 	defaultNamespaces bool
+	inspectCluster    bool
 
 	builder *resource.Builder
 	// nsGetter for the admission to get the NS rules and possibly check for NS exemption
@@ -63,6 +64,7 @@ func (opts *PSACheckerOptions) AddFlags(cmd *cobra.Command) {
 		"identifying the resource to run PodSecurity admission check against",
 	)
 	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "default empty namespaces in files to the --namespace value")
+	flags.BoolVar(&opts.inspectCluster, "inspect-cluster", false, "specify to inspect privileges of workloads in all namespaces")
 }
 
 func (opts *PSACheckerOptions) ClientConfig() (*rest.Config, error) {
@@ -122,61 +124,105 @@ func (opts *PSACheckerOptions) Validate() []error {
 	}
 
 	if opts.defaultNamespaces && len(*opts.clientConfigOptions.Namespace) == 0 {
-		errs = append(errs, fmt.Errorf("cannot specify --default-namespaces without also specifying a value for --namespace"))
+		errs = append(errs, fmt.Errorf("cannot specify --default-namespaces without also providing a value for --namespace"))
+	}
+
+	if opts.inspectCluster {
+		if len(*opts.clientConfigOptions.Namespace) > 0 {
+			errs = append(errs, fmt.Errorf("cannot specify --inspect-cluster along with --namespace"))
+		}
+		if len(opts.filenameOptions.Filenames) > 0 {
+			errs = append(errs, fmt.Errorf("cannot specify local files when --inspect-cluster is set"))
+		}
 	}
 
 	return errs
 }
 
-func (opts *PSACheckerOptions) Run(ctx context.Context) (map[string]*ParallelAdmissionResult, error) {
-	res := opts.builder.Do()
-
-	infos, err := res.Infos()
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
-	}
-
+func (opts *PSACheckerOptions) Run(ctx context.Context) (*OrderedStringToPSALevelMap, error) {
 	adm, err := NewParallelAdmission(opts.kubeClient, opts.nsGetter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
 
-	results := map[string]*ParallelAdmissionResult{}
-	for _, resInfo := range infos {
-
-		var resource schema.GroupVersionResource
-		if resInfo.Mapping != nil {
-			resource = resInfo.Mapping.Resource
-		} else {
-			// TODO: not great, I wonder whether there's a better way to do this for non-server requests
-			resource, _ = meta.UnsafeGuessKindToResource(resInfo.Object.GetObjectKind().GroupVersionKind())
+	var nsAggregatedResults map[string]psapi.Level
+	if opts.inspectCluster {
+		namespacesList, err := opts.kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list namespaces: %w", err)
 		}
 
-		objMeta := resInfo.Object.(metav1.ObjectMetaAccessor).GetObjectMeta()
-		if opts.isLocal && len(objMeta.GetNamespace()) == 0 {
-			if !opts.defaultNamespaces {
-				return nil, fmt.Errorf("\"%s/%s\" is missing namespace in its definition", resInfo.Object.GetObjectKind().GroupVersionKind().Kind, objMeta.GetName())
-			}
+		nsAggregatedResults, err = adm.ValidateNamespaces(ctx, namespacesList.Items...)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		res := opts.builder.Do()
 
-			// the resource.Builder DefaultNamespace() won't default namespaces unless Latest() is set but
-			// Latest() would attempt to retrieve the data from server (and would panic() on missing RestMapping)
-			// so let's just do this
-			objMeta.SetNamespace(*opts.clientConfigOptions.Namespace)
+		infos, err := res.Infos()
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
 		}
 
-		objNS, objName := objMeta.GetNamespace(), objMeta.GetName()
-		objKind := resInfo.Object.GetObjectKind()
-		key := fmt.Sprintf("gvk: %q - %s/%s", objKind.GroupVersionKind().String(), objNS, objName)
+		var defaultNS *string
+		if opts.defaultNamespaces {
+			defaultNS = opts.clientConfigOptions.Namespace
+		}
 
-		results[key] = adm.Validate(ctx, &psadmission.AttributesRecord{
-			Namespace: objNS,
-			Name:      objName,
-			Resource:  resource,
-			Operation: admissionv1.Create,
-			Object:    resInfo.Object,
-			Username:  "", // TODO: do we need this? What's it for anyway?
-		})
+		results, err := adm.ValidateResources(ctx, opts.isLocal, defaultNS, infos...)
+		if err != nil {
+			return nil, err
+		}
+		nsAggregatedResults = MostRestrictivePolicyPerNamespace(results)
 	}
 
-	return results, nil
+	return NewOrderedStringToPSALevelMap(nsAggregatedResults), nil
+}
+
+type OrderedStringToPSALevelMap struct {
+	ordered     bool
+	internalMap map[string]psapi.Level
+	keys        sort.StringSlice
+}
+
+func NewOrderedStringToPSALevelMap(m map[string]psapi.Level) *OrderedStringToPSALevelMap {
+	ret := &OrderedStringToPSALevelMap{
+		ordered:     true,
+		internalMap: make(map[string]psapi.Level),
+		keys:        make([]string, 0),
+	}
+
+	if len(m) != 0 {
+		ret.ordered = false
+		ret.internalMap = m
+		for k := range m {
+			ret.keys = append(ret.keys, k)
+		}
+	}
+
+	return ret
+}
+
+func (m *OrderedStringToPSALevelMap) Set(k string, v psapi.Level) {
+	if _, ok := m.internalMap[k]; !ok {
+		m.ordered = false
+		m.keys = append(m.keys, k)
+	}
+	m.internalMap[k] = v
+}
+
+func (m *OrderedStringToPSALevelMap) Get(k string) psapi.Level {
+	return m.internalMap[k]
+}
+
+func (m *OrderedStringToPSALevelMap) Keys() []string {
+	ret := make([]string, len(m.keys))
+
+	if !m.ordered {
+		m.keys.Sort()
+		m.ordered = true
+	}
+
+	copy(ret, m.keys)
+	return ret
 }

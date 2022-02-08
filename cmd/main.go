@@ -36,13 +36,13 @@ func newCmd() *cobra.Command {
 				return fmt.Errorf("there were errors while setting up the command: %v", errs)
 			}
 
-			responses, err := o.Run(context.Background())
+			nsAggregatedResults, err := o.Run(context.Background())
 			if err != nil {
 				return err
 			}
 
-			for resource, response := range responses {
-				fmt.Fprintf(c.OutOrStdout(), "%s:\n%s\n---\n\n", resource, response.String())
+			for _, ns := range nsAggregatedResults.Keys() {
+				fmt.Fprintf(c.OutOrStdout(), "%s: %s\n", ns, nsAggregatedResults.Get(ns))
 			}
 			return nil
 		},
