@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/stlaz/psachecker/pkg/checker"
+	"github.com/stlaz/psachecker/pkg/clusterinspect"
 )
 
 func main() {
@@ -50,5 +51,6 @@ func newCmd() *cobra.Command {
 
 	o.AddFlags(cmd)
 
+	cmd.AddCommand(clusterinspect.NewClusterInspectCommand(o.ClientConfigOptions))
 	return cmd
 }

@@ -32,7 +32,7 @@ func init() {
 }
 
 type PSACheckerOptions struct {
-	clientConfigOptions *genericclioptions.ConfigFlags
+	ClientConfigOptions *genericclioptions.ConfigFlags
 	filenameOptions     *resource.FilenameOptions
 
 	// custom flags
@@ -48,7 +48,7 @@ type PSACheckerOptions struct {
 
 func NewPSACheckerOptions() *PSACheckerOptions {
 	return &PSACheckerOptions{
-		clientConfigOptions: genericclioptions.NewConfigFlags(true),
+		ClientConfigOptions: genericclioptions.NewConfigFlags(true),
 		filenameOptions:     &resource.FilenameOptions{},
 	}
 }
@@ -56,22 +56,22 @@ func NewPSACheckerOptions() *PSACheckerOptions {
 func (opts *PSACheckerOptions) AddFlags(cmd *cobra.Command) {
 	flags := cmd.Flags()
 
-	opts.clientConfigOptions.AddFlags(flags)
+	opts.ClientConfigOptions.AddFlags(cmd.Flags())
 	cmdutil.AddFilenameOptionFlags(cmd, // TODO: this adds a kustomize flag, do we need to special-case handle it?
 		opts.filenameOptions,
 		"identifying the resource to run PodSecurity admission check against",
 	)
 	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "Default empty namespaces in files to the --namespace value.")
 	flags.BoolVar(&opts.inspectCluster, "inspect-cluster", false, "Specify to inspect privileges of workloads in all namespaces.")
-	flags.BoolVar(&opts.updatesOnly, "updates-only", false, "Display only namespaces that need to be updated. Does not currently work for local files.")
+	cmd.PersistentFlags().BoolVar(&opts.updatesOnly, "updates-only", false, "Display only namespaces that need to be updated. Does not currently work for local files.")
 }
 
 func (opts *PSACheckerOptions) ClientConfig() (*rest.Config, error) {
-	return opts.clientConfigOptions.ToRawKubeConfigLoader().ClientConfig()
+	return opts.ClientConfigOptions.ToRawKubeConfigLoader().ClientConfig()
 }
 
 func (opts *PSACheckerOptions) Complete(args []string) error {
-	clientConfig, err := opts.clientConfigOptions.ToRawKubeConfigLoader().ClientConfig()
+	clientConfig, err := opts.ClientConfigOptions.ToRawKubeConfigLoader().ClientConfig()
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (opts *PSACheckerOptions) Complete(args []string) error {
 		return err
 	}
 
-	opts.builder = resource.NewBuilder(opts.clientConfigOptions).
+	opts.builder = resource.NewBuilder(opts.ClientConfigOptions).
 		WithScheme(scheme,
 			corev1.SchemeGroupVersion,
 			appsv1.SchemeGroupVersion,
@@ -101,7 +101,7 @@ func (opts *PSACheckerOptions) Complete(args []string) error {
 			ResourceTypeOrNameArgs(true, args...)
 	}
 
-	if ns := *opts.clientConfigOptions.Namespace; len(ns) > 0 {
+	if ns := *opts.ClientConfigOptions.Namespace; len(ns) > 0 {
 		opts.builder = opts.builder.
 			NamespaceParam(ns).
 			DefaultNamespace()
@@ -117,12 +117,12 @@ func (opts *PSACheckerOptions) Validate() []error {
 		errs = append(errs, fmt.Errorf("missing kube client"))
 	}
 
-	if opts.defaultNamespaces && len(*opts.clientConfigOptions.Namespace) == 0 {
+	if opts.defaultNamespaces && len(*opts.ClientConfigOptions.Namespace) == 0 {
 		errs = append(errs, fmt.Errorf("cannot specify --default-namespaces without also providing a value for --namespace"))
 	}
 
 	if opts.inspectCluster {
-		if len(*opts.clientConfigOptions.Namespace) > 0 {
+		if len(*opts.ClientConfigOptions.Namespace) > 0 {
 			errs = append(errs, fmt.Errorf("cannot specify --inspect-cluster along with --namespace"))
 		}
 		if len(opts.filenameOptions.Filenames) > 0 {
@@ -140,56 +140,34 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (*OrderedStringToPSALeve
 	}
 
 	var nsAggregatedResults map[string]psapi.Level
-	if opts.inspectCluster {
-		namespacesList, err := opts.kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to list namespaces: %w", err)
-		}
 
-		nsAggregatedResults, err = adm.ValidateNamespaces(ctx, namespacesList.Items...)
-		if err != nil {
-			return nil, err
-		}
-		if opts.updatesOnly {
-			for _, origNS := range namespacesList.Items {
-				suggestedLevel := nsAggregatedResults[origNS.Name]
-				// FIXME: we need to take the global config into account during the validation otherwise
-				//        this is going to include NSes that don't need updating
-				if string(suggestedLevel) == origNS.Labels[psapi.EnforceLevelLabel] {
-					delete(nsAggregatedResults, origNS.Name)
-				}
+	res := opts.builder.Do()
+
+	infos, err := res.Infos()
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
+	}
+
+	var defaultNS *string
+	if opts.defaultNamespaces {
+		defaultNS = opts.ClientConfigOptions.Namespace
+	}
+
+	results, err := adm.ValidateResources(ctx, opts.isLocal, defaultNS, infos...)
+	if err != nil {
+		return nil, err
+	}
+	nsAggregatedResults = MostRestrictivePolicyPerNamespace(results)
+	if !opts.isLocal && opts.updatesOnly {
+		// TODO: list the NSes we've got in the map at the same time instead of going 1-by-1?
+		for ns, level := range nsAggregatedResults {
+			liveNS, err := opts.kubeClient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
 			}
-		}
-
-	} else {
-		res := opts.builder.Do()
-
-		infos, err := res.Infos()
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve info about the objects: %w", err)
-		}
-
-		var defaultNS *string
-		if opts.defaultNamespaces {
-			defaultNS = opts.clientConfigOptions.Namespace
-		}
-
-		results, err := adm.ValidateResources(ctx, opts.isLocal, defaultNS, infos...)
-		if err != nil {
-			return nil, err
-		}
-		nsAggregatedResults = MostRestrictivePolicyPerNamespace(results)
-		if !opts.isLocal && opts.updatesOnly {
-			// TODO: list the NSes we've got in the map at the same time instead of going 1-by-1?
-			for ns, level := range nsAggregatedResults {
-				liveNS, err := opts.kubeClient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
-				if err != nil {
-					return nil, err
-				}
-				// FIXME: need to take the global config into account
-				if string(level) == liveNS.Labels[psapi.EnforceLevelLabel] {
-					delete(nsAggregatedResults, ns)
-				}
+			// FIXME: need to take the global config into account
+			if string(level) == liveNS.Labels[psapi.EnforceLevelLabel] {
+				delete(nsAggregatedResults, ns)
 			}
 		}
 	}
