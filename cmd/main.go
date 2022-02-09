@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"k8s.io/component-base/cli"
+
 	"github.com/stlaz/psachecker/pkg/checker"
 	"github.com/stlaz/psachecker/pkg/clusterinspect"
 )
@@ -17,9 +19,7 @@ func main() {
 	pflag.CommandLine = flags
 
 	validationCmd := newCmd()
-	if err := validationCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	os.Exit(cli.Run(validationCmd))
 
 }
 

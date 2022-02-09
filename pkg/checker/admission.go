@@ -104,7 +104,7 @@ func NewParallelAdmission(kubeClient kubernetes.Interface) (*ParallelAdmission, 
 	}, nil
 }
 
-func (a *ParallelAdmission) Validate(ctx context.Context, attrs psadmission.Attributes) *ParallelAdmissionResult {
+func (a *ParallelAdmission) Validate(ctx context.Context, attrs psapi.Attributes) *ParallelAdmissionResult {
 	result := &ParallelAdmissionResult{}
 	resultsWG := &sync.WaitGroup{}
 	waitForAdmission := func(wg *sync.WaitGroup, admission *psadmission.Admission, result **admissionv1.AdmissionResponse) {
@@ -154,7 +154,7 @@ func (a *ParallelAdmission) ValidateResources(ctx context.Context, localResource
 			Name:      objName,
 		}
 
-		results[key] = a.Validate(ctx, &psadmission.AttributesRecord{
+		results[key] = a.Validate(ctx, &psapi.AttributesRecord{
 			Namespace: objNS,
 			Name:      objName,
 			Resource:  resource,
@@ -182,7 +182,7 @@ func (a *ParallelAdmission) ValidateNamespaces(ctx context.Context, namespaces .
 			//   may be stuck
 			// - a flag should be added to decide which admission level should run these
 			//   validation tests (based on cluster config)
-			admissionResult := a.privileged.Validate(ctx, &psadmission.AttributesRecord{
+			admissionResult := a.privileged.Validate(ctx, &psapi.AttributesRecord{
 				Name:      ns.Name,
 				Resource:  ns.GroupVersionKind().GroupVersion().WithResource("namespaces"),
 				Operation: admissionv1.Update,
@@ -228,6 +228,7 @@ func setupAdmission(
 		},
 		NamespaceGetter: nsGetter,
 		PodLister:       podLister,
+		Metrics:         &NoopMetricsRecorder{},
 	}
 	if err := adm.CompleteConfiguration(); err != nil {
 		return nil, err
