@@ -167,7 +167,7 @@ func (a *ParallelAdmission) ValidateNamespaces(ctx context.Context, namespaces .
 		for _, privilegeLevel := range []psapi.Level{psapi.LevelBaseline, psapi.LevelRestricted} {
 			newNS := ns.DeepCopy()
 			newNS.Labels[psapi.EnforceLevelLabel] = string(privilegeLevel)
-			newNS.Labels[psapi.EnforceVersionLabel] = string(psapi.VersionLatest) // TODO: should this be the earliest version?
+			newNS.Labels[psapi.EnforceVersionLabel] = string(psapi.VersionLatest) // FIXME: should this be the earliest version or the current one? Which version should the admission config use?
 
 			// TODO:
 			// - perhaps a flag should be added to inspect all workloads instead of namespaces

@@ -39,6 +39,7 @@ type PSACheckerOptions struct {
 	// custom flags
 	defaultNamespaces bool
 	inspectCluster    bool
+	updatesOnly       bool
 
 	builder *resource.Builder
 	// nsGetter for the admission to get the NS rules and possibly check for NS exemption
@@ -63,8 +64,9 @@ func (opts *PSACheckerOptions) AddFlags(cmd *cobra.Command) {
 		opts.filenameOptions,
 		"identifying the resource to run PodSecurity admission check against",
 	)
-	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "default empty namespaces in files to the --namespace value")
-	flags.BoolVar(&opts.inspectCluster, "inspect-cluster", false, "specify to inspect privileges of workloads in all namespaces")
+	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "Default empty namespaces in files to the --namespace value.")
+	flags.BoolVar(&opts.inspectCluster, "inspect-cluster", false, "Specify to inspect privileges of workloads in all namespaces.")
+	flags.BoolVar(&opts.updatesOnly, "updates-only", false, "Display only namespaces that need to be updated. Does not currently work for local files.")
 }
 
 func (opts *PSACheckerOptions) ClientConfig() (*rest.Config, error) {
@@ -156,6 +158,17 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (*OrderedStringToPSALeve
 		if err != nil {
 			return nil, err
 		}
+		if opts.updatesOnly {
+			for _, origNS := range namespacesList.Items {
+				suggestedLevel := nsAggregatedResults[origNS.Name]
+				// FIXME: we need to take the global config into account during the validation otherwise
+				//        this is going to include NSes that don't need updating
+				if string(suggestedLevel) == origNS.Labels[psapi.EnforceLevelLabel] {
+					delete(nsAggregatedResults, origNS.Name)
+				}
+			}
+		}
+
 	} else {
 		res := opts.builder.Do()
 
@@ -174,6 +187,19 @@ func (opts *PSACheckerOptions) Run(ctx context.Context) (*OrderedStringToPSALeve
 			return nil, err
 		}
 		nsAggregatedResults = MostRestrictivePolicyPerNamespace(results)
+		if !opts.isLocal && opts.updatesOnly {
+			// TODO: list the NSes we've got in the map at the same time instead of going 1-by-1?
+			for ns, level := range nsAggregatedResults {
+				liveNS, err := opts.kubeClient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+				if err != nil {
+					return nil, err
+				}
+				// FIXME: need to take the global config into account
+				if string(level) == liveNS.Labels[psapi.EnforceLevelLabel] {
+					delete(nsAggregatedResults, ns)
+				}
+			}
+		}
 	}
 
 	return NewOrderedStringToPSALevelMap(nsAggregatedResults), nil
