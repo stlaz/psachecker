@@ -69,7 +69,7 @@ func (r *ParallelAdmissionResult) MostRestrictivePolicy() psapi.Level {
 	}
 }
 
-func NewParallelAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.NamespaceGetter) (*ParallelAdmission, error) {
+func NewParallelAdmission(kubeClient kubernetes.Interface) (*ParallelAdmission, error) {
 	evaluator, err := policy.NewEvaluator(policy.DefaultChecks()) // TODO: allow experimental checks by a flag
 	if err != nil {
 		return nil, err
@@ -77,6 +77,13 @@ func NewParallelAdmission(kubeClient kubernetes.Interface, nsGetter psadmission.
 
 	podLister := psadmission.PodListerFromClient(kubeClient) // only used while validating pods in an NS
 
+	// TODO: NamespaceGetter is currently only used to get the policies of the NS
+	//       during a given Pod/pod controller evaluation. We do not want the NS
+	//       policies to interfere with the admission that we are going to be testing
+	//       so we mock NS retrieval all the time w/ empty PSa labels.
+	// IMPORTANT: make sure to unit-test that Namespace-object admission validation
+	//            is not influenced by nsGetter
+	nsGetter := KnowAllNamespaceGetter
 	privilegedAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelPrivileged)
 	if err != nil {
 		return nil, err

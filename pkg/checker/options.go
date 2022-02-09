@@ -18,7 +18,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
-	psadmission "k8s.io/pod-security-admission/admission"
 	psapi "k8s.io/pod-security-admission/api"
 )
 
@@ -41,9 +40,7 @@ type PSACheckerOptions struct {
 	inspectCluster    bool
 	updatesOnly       bool
 
-	builder *resource.Builder
-	// nsGetter for the admission to get the NS rules and possibly check for NS exemption
-	nsGetter   psadmission.NamespaceGetter
+	builder    *resource.Builder
 	kubeClient kubernetes.Interface
 
 	isLocal bool
@@ -97,13 +94,11 @@ func (opts *PSACheckerOptions) Complete(args []string) error {
 			Local().
 			FilenameParam(false, opts.filenameOptions)
 
-		opts.nsGetter = KnowAllNamespaceGetter
 		opts.isLocal = true
 	} else {
 		opts.builder = opts.builder.
 			SingleResourceType().
 			ResourceTypeOrNameArgs(true, args...)
-		opts.nsGetter = psadmission.NamespaceGetterFromClient(opts.kubeClient)
 	}
 
 	if ns := *opts.clientConfigOptions.Namespace; len(ns) > 0 {
@@ -120,9 +115,6 @@ func (opts *PSACheckerOptions) Validate() []error {
 
 	if opts.kubeClient == nil {
 		errs = append(errs, fmt.Errorf("missing kube client"))
-	}
-	if opts.nsGetter == nil {
-		errs = append(errs, fmt.Errorf("missing nsGetter"))
 	}
 
 	if opts.defaultNamespaces && len(*opts.clientConfigOptions.Namespace) == 0 {
@@ -142,7 +134,7 @@ func (opts *PSACheckerOptions) Validate() []error {
 }
 
 func (opts *PSACheckerOptions) Run(ctx context.Context) (*OrderedStringToPSALevelMap, error) {
-	adm, err := NewParallelAdmission(opts.kubeClient, opts.nsGetter)
+	adm, err := NewParallelAdmission(opts.kubeClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
