@@ -62,7 +62,6 @@ func (opts *PSACheckerOptions) AddFlags(cmd *cobra.Command) {
 		"identifying the resource to run PodSecurity admission check against",
 	)
 	flags.BoolVar(&opts.defaultNamespaces, "default-namespaces", false, "Default empty namespaces in files to the --namespace value.")
-	flags.BoolVar(&opts.inspectCluster, "inspect-cluster", false, "Specify to inspect privileges of workloads in all namespaces.")
 	cmd.PersistentFlags().BoolVar(&opts.updatesOnly, "updates-only", false, "Display only namespaces that need to be updated. Does not currently work for local files.")
 }
 

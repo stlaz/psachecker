@@ -17,10 +17,6 @@ func NewClusterInspectCommand(clientConfigOptions *genericclioptions.ConfigFlags
 		SilenceUsage: true,
 		RunE: func(c *cobra.Command, args []string) error {
 			o.Complete(c, clientConfigOptions)
-			// errs := o.Validate()
-			// if len(errs) > 0 {
-			// 	return fmt.Errorf("there were errors while setting up the command: %v", errs)
-			// }
 
 			nsAggregatedResults, err := o.Run(context.Background())
 			if err != nil {
