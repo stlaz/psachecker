@@ -1,4 +1,4 @@
-package checker
+package admission
 
 import (
 	psapi "k8s.io/pod-security-admission/api"

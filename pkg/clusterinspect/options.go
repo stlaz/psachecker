@@ -12,7 +12,7 @@ import (
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	psapi "k8s.io/pod-security-admission/api"
 
-	"github.com/stlaz/psachecker/pkg/checker"
+	"github.com/stlaz/psachecker/pkg/admission"
 )
 
 type ClusterInspectOptions struct {
@@ -44,8 +44,8 @@ func (o *ClusterInspectOptions) Complete(cmd *cobra.Command, clientConfigOptions
 	return nil
 }
 
-func (o *ClusterInspectOptions) Run(ctx context.Context) (*checker.OrderedStringToPSALevelMap, error) {
-	adm, err := checker.NewParallelAdmission(o.kubeClient)
+func (o *ClusterInspectOptions) Run(ctx context.Context) (*admission.OrderedStringToPSALevelMap, error) {
+	adm, err := admission.NewParallelAdmission(o.kubeClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
@@ -70,5 +70,5 @@ func (o *ClusterInspectOptions) Run(ctx context.Context) (*checker.OrderedString
 		}
 	}
 
-	return checker.NewOrderedStringToPSALevelMap(nsAggregatedResults), nil
+	return admission.NewOrderedStringToPSALevelMap(nsAggregatedResults), nil
 }
