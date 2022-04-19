@@ -2,7 +2,7 @@
 build:
 	go build -o kubectl-psachecker ./cmd/main.go
 
-install:
+install: build
 	cp kubectl-psachecker ${GOBIN}
 
 uninstall:
