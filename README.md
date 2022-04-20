@@ -15,9 +15,9 @@ your $GOBIN by running `make install` or use it directly as `./kubectl-psachecke
 
 Returns the restrictive level for workloads present in the files specified by the `-f` flag (can be set multiple times).
 
-`./kubectl-psachecker inspect-cluster [--updates-only]`
+`./kubectl-psachecker inspect-cluster [-n namespace] [--updates-only]`
 
-Returns the restrictive level for all the namespaces in the cluster.
+Returns the restrictive level for [the selected namespace or] all namespaces in the cluster.
 
 ## The state of this repository
 

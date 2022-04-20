@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -50,7 +51,11 @@ func (o *ClusterInspectOptions) Run(ctx context.Context) (*admission.OrderedStri
 		return nil, fmt.Errorf("failed to set up admission: %w", err)
 	}
 
-	namespacesList, err := o.kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	listOpts := metav1.ListOptions{}
+	if o.clientConfigOptions.Namespace != nil && *o.clientConfigOptions.Namespace != "" {
+		listOpts.FieldSelector = fields.OneTermEqualSelector("metadata.name", *o.clientConfigOptions.Namespace).String()
+	}
+	namespacesList, err := o.kubeClient.CoreV1().Namespaces().List(ctx, listOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w", err)
 	}
