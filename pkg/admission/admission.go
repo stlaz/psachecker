@@ -154,6 +154,23 @@ func (a *ParallelAdmission) ValidateResources(ctx context.Context, localResource
 			Name:      objName,
 		}
 
+		// If the object includes a pod spec (i.e. Deployment), create a Pod object out of it for validation.
+		// For admission only pod resources will be enforced, deployments won't.
+		podExtractor := psadmission.DefaultPodSpecExtractor{}
+		if podExtractor.HasPodSpec(resource.GroupResource()) {
+			objMeta, spec, err := podExtractor.ExtractPodSpec(resInfo.Object)
+			if err != nil {
+				return nil, fmt.Errorf("error extracting pod spec: %w", err)
+			}
+
+			resInfo.Object = &corev1.Pod{
+				ObjectMeta: *objMeta,
+				Spec:       *spec,
+			}
+
+			resource = corev1.SchemeGroupVersion.WithResource("pods")
+		}
+
 		results[key] = a.Validate(ctx, &psapi.AttributesRecord{
 			Namespace: objNS,
 			Name:      objName,
