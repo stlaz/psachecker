@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
@@ -19,6 +20,8 @@ import (
 )
 
 type ParallelAdmission struct {
+	podSpecExtractor psadmission.PodSpecExtractor
+
 	privileged *psadmission.Admission
 	baseline   *psadmission.Admission
 	restricted *psadmission.Admission
@@ -77,6 +80,8 @@ func NewParallelAdmission(kubeClient kubernetes.Interface) (*ParallelAdmission, 
 
 	podLister := psadmission.PodListerFromClient(kubeClient) // only used while validating pods in an NS
 
+	podSpecExtractor := psadmission.DefaultPodSpecExtractor{}
+
 	// TODO: NamespaceGetter is currently only used to get the policies of the NS
 	//       during a given Pod/pod controller evaluation. We do not want the NS
 	//       policies to interfere with the admission that we are going to be testing
@@ -84,20 +89,22 @@ func NewParallelAdmission(kubeClient kubernetes.Interface) (*ParallelAdmission, 
 	// IMPORTANT: make sure to unit-test that Namespace-object admission validation
 	//            is not influenced by nsGetter
 	nsGetter := KnowAllNamespaceGetter
-	privilegedAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelPrivileged)
+	privilegedAdm, err := setupAdmission(nsGetter, podLister, evaluator, podSpecExtractor, psapi.LevelPrivileged)
 	if err != nil {
 		return nil, err
 	}
-	baselineAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelBaseline)
+	baselineAdm, err := setupAdmission(nsGetter, podLister, evaluator, podSpecExtractor, psapi.LevelBaseline)
 	if err != nil {
 		return nil, err
 	}
-	restrictedAdm, err := setupAdmission(nsGetter, podLister, evaluator, psapi.LevelRestricted)
+	restrictedAdm, err := setupAdmission(nsGetter, podLister, evaluator, podSpecExtractor, psapi.LevelRestricted)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ParallelAdmission{
+		podSpecExtractor: podSpecExtractor,
+
 		privileged: privilegedAdm,
 		baseline:   baselineAdm,
 		restricted: restrictedAdm,
@@ -154,16 +161,16 @@ func (a *ParallelAdmission) ValidateResources(ctx context.Context, localResource
 			Name:      objName,
 		}
 
-		// If the object includes a pod spec (i.e. Deployment), create a Pod object out of it for validation.
-		// For admission only pod resources will be enforced, deployments won't.
-		podExtractor := psadmission.DefaultPodSpecExtractor{}
-		if podExtractor.HasPodSpec(resource.GroupResource()) {
-			objMeta, spec, err := podExtractor.ExtractPodSpec(resInfo.Object)
+		// The admission only returns warnings and audit logs for pod controllers
+		// so we need to pretend a pod is being validate in order to ensure enforcement
+		var validatedObject runtime.Object
+		if a.podSpecExtractor.HasPodSpec(resource.GroupResource()) {
+			objMeta, spec, err := a.podSpecExtractor.ExtractPodSpec(resInfo.Object)
 			if err != nil {
 				return nil, fmt.Errorf("error extracting pod spec: %w", err)
 			}
 
-			resInfo.Object = &corev1.Pod{
+			validatedObject = &corev1.Pod{
 				ObjectMeta: *objMeta,
 				Spec:       *spec,
 			}
@@ -176,7 +183,7 @@ func (a *ParallelAdmission) ValidateResources(ctx context.Context, localResource
 			Name:      objName,
 			Resource:  resource,
 			Operation: admissionv1.Create,
-			Object:    resInfo.Object,
+			Object:    validatedObject,
 			Username:  "", // TODO: do we need this? What's it for anyway?
 		})
 	}
@@ -227,6 +234,7 @@ func setupAdmission(
 	nsGetter psadmission.NamespaceGetter,
 	podLister psadmission.PodLister,
 	evaluator policy.Evaluator,
+	podSpecExtractor psadmission.PodSpecExtractor,
 	admissionLevel psapi.Level,
 ) (*psadmission.Admission, error) {
 
